@@ -1,0 +1,201 @@
+diff --git a/kernel/initramfs b/kernel/initramfs
+index bba9dc9eb..b558a4d66 100644
+Binary files a/kernel/initramfs and b/kernel/initramfs differ
+diff --git a/kernel/key_counter_module/CMakeLists.txt b/kernel/key_counter_module/CMakeLists.txt
+new file mode 100644
+index 000000000..bd1c26c10
+--- /dev/null
++++ b/kernel/key_counter_module/CMakeLists.txt
+@@ -0,0 +1,23 @@
++cmake_minimum_required(VERSION 3.0.0 FATAL_ERROR)
++
++project("Linux Kernel Module with CLion IDE support / CMake" VERSION 0.1.0 LANGUAGES C)
++set(CMAKE_C_STANDARD 90)
++set(CMAKE_C_STANDARD_REQUIRED ON)
++
++# Find kernel headers
++list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
++find_package(KernelHeaders REQUIRED)
++
++
++# find MODULE_LICENSE("GPL"), MODULE_AUTHOR() etc.
++# thanks to "merseyviking" from stack overflow
++add_definitions(-D__KERNEL__ -DMODULE)
++
++# this is needed in order for CLion IDE to provide syntax highlightning
++# this is independent from the actual kernel object that is built
++add_executable(key_counter_module
++        key_counter_module.c
++)
++
++# CLion IDE will find symbols from <linux/*>
++target_include_directories("key_counter_module" PRIVATE ${KERNELHEADERS_INCLUDE_DIRS})
+diff --git a/kernel/key_counter_module/Makefile b/kernel/key_counter_module/Makefile
+new file mode 100644
+index 000000000..be3dbacf7
+--- /dev/null
++++ b/kernel/key_counter_module/Makefile
+@@ -0,0 +1,13 @@
++obj-m += key_counter_module.o
++
++# pass it for building (default is /)
++ABS_PATH_TO_VROOT ?= "/"
++KERNEL_VERSION ?= "$(shell uname -r)"
++
++# "/lib/modules/$(shell uname -r)/build"
++PATH_TO_MODULE_BUILD=$(ABS_PATH_TO_VROOT)/lib/modules/$(KERNEL_VERSION)/build
++
++all:
++	make -C "$(PATH_TO_MODULE_BUILD)" M="$(PWD)" modules
++clean:
++	make -C "$(PATH_TO_MODULE_BUILD)" M="$(PWD)" clean
+diff --git a/kernel/key_counter_module/cmake/FindKernelHeaders.cmake b/kernel/key_counter_module/cmake/FindKernelHeaders.cmake
+new file mode 100644
+index 000000000..99ac0e9be
+--- /dev/null
++++ b/kernel/key_counter_module/cmake/FindKernelHeaders.cmake
+@@ -0,0 +1,31 @@
++# BIG THANK YOU TO THE ORIGINAL AUTHOR
++# https://gitlab.com/christophacham/cmake-kernel-module
++
++# Find the kernel release
++execute_process(
++        COMMAND uname -r
++        OUTPUT_VARIABLE KERNEL_RELEASE
++        OUTPUT_STRIP_TRAILING_WHITESPACE
++)
++
++# Find the headers
++find_path(KERNELHEADERS_DIR
++        include/linux/user.h
++        PATHS /usr/src/linux-headers-${KERNEL_RELEASE}
++)
++
++message(STATUS "Kernel release: ${KERNEL_RELEASE}")
++message(STATUS "Kernel headers: ${KERNELHEADERS_DIR}")
++
++if (KERNELHEADERS_DIR)
++    set(KERNELHEADERS_INCLUDE_DIRS
++            ${KERNELHEADERS_DIR}/include
++            ${KERNELHEADERS_DIR}/arch/x86/include
++            CACHE PATH "Kernel headers include dirs"
++    )
++    set(KERNELHEADERS_FOUND 1 CACHE STRING "Set to 1 if kernel headers were found")
++else (KERNELHEADERS_DIR)
++    set(KERNELHEADERS_FOUND 0 CACHE STRING "Set to 1 if kernel headers were found")
++endif (KERNELHEADERS_DIR)
++
++mark_as_advanced(KERNELHEADERS_FOUND)
+diff --git a/kernel/key_counter_module/key_counter_module.c b/kernel/key_counter_module/key_counter_module.c
+new file mode 100644
+index 000000000..a08d6d754
+--- /dev/null
++++ b/kernel/key_counter_module/key_counter_module.c
+@@ -0,0 +1,69 @@
++// Module registration.
++#include <linux/kernel.h>
++#include <linux/init.h>
++#include <linux/module.h>
++
++// Others.
++#include <linux/time.h>
++#include <linux/interrupt.h>
++
++MODULE_LICENSE("MIT");
++MODULE_AUTHOR("Egor Vashkevich");
++MODULE_DESCRIPTION("Reports how much keys was entered");
++MODULE_VERSION("0.01");
++
++//------------------------------------------------------------------------------
++
++// Timer variables.
++
++static struct timer_list my_timer;
++static atomic_t key_count = ATOMIC_INIT(0);
++static const int TIMEOUT = 60000; // 60 secs == 1 min
++
++static void schedule_timer(void) {
++  mod_timer(&my_timer, jiffies + msecs_to_jiffies(TIMEOUT));
++}
++
++void my_timer_callback(struct timer_list* timer) {
++  int number = atomic_fetch_and(0, &key_count);
++  pr_info("Characters typed in the last minute: %d\n", number);
++  schedule_timer();
++}
++
++irqreturn_t irq_handler(int irq, void* dev_id) {
++  atomic_inc(&key_count);
++  return IRQ_HANDLED;
++}
++
++// IRQ for PS/2 keyboard https://en.wikipedia.org/wiki/Interrupt_request#Master_PIC
++static const int PS2_IRQ = 1;
++
++static int __init key_counter_init(void) {
++  pr_info("Initialising key_counter_module...\n");
++
++  timer_setup(&my_timer, my_timer_callback, 0);
++  schedule_timer();
++
++  int err = request_irq(PS2_IRQ,
++                        irq_handler,
++                        IRQF_SHARED,
++                        "Key counter",
++                        (void*) irq_handler);
++  if (err) {
++    pr_err("Failed to register IRQ handler.\n"
++           "Error code: %d\n.", err);
++    return -EIO;
++  }
++
++  pr_info("key_counter_module initialized successfully!\n");
++  return 0;
++}
++
++static void __exit key_counter_exit(void) {
++  free_irq(PS2_IRQ, (void*) irq_handler);
++  del_timer(&my_timer);
++  printk(KERN_INFO "Key counter exited\n");
++}
++
++module_init(key_counter_init);
++module_exit(key_counter_exit);
+diff --git a/kernel/run_task2.sh b/kernel/run_task2.sh
+new file mode 100755
+index 000000000..b66631d30
+--- /dev/null
++++ b/kernel/run_task2.sh
+@@ -0,0 +1,13 @@
++#!/bin/bash
++
++cd key_counter_module
++ABS_PATH_TO_VROOT="/home/ownstreamer/Proga/MIPT/Linux/workspace/kernel/vroot" KERNEL_VERSION=6.7.4 make clean
++ABS_PATH_TO_VROOT="/home/ownstreamer/Proga/MIPT/Linux/workspace/kernel/vroot" KERNEL_VERSION=6.7.4 make all || exit 10
++
++cp key_counter_module.ko ../vroot/lib/modules/6.7.4/
++
++cd ../vroot
++find . | cpio -ov --format=newc | gzip -9 > ../initramfs
++
++# Run qemu
++cd ../
+diff --git a/kernel/vroot/init b/kernel/vroot/init
+index b1f6ccfad..699c429e6 100755
+--- a/kernel/vroot/init
++++ b/kernel/vroot/init
+@@ -7,4 +7,6 @@ mount -t sysfs sysfs /sys
+ 
+ echo 0 > /proc/sys/kernel/printk
+ 
++insmod /lib/modules/6.7.4/key_counter_module.ko
++
+ exec setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1'
+diff --git a/kernel/vroot/lib/modules/6.7.4/key_counter_module.ko b/kernel/vroot/lib/modules/6.7.4/key_counter_module.ko
+new file mode 100644
+index 000000000..4a8089f72
+Binary files /dev/null and b/kernel/vroot/lib/modules/6.7.4/key_counter_module.ko differ
+diff --git a/kernel/vroot/lib/modules/6.7.4/phone_book_module.ko b/kernel/vroot/lib/modules/6.7.4/phone_book_module.ko
+deleted file mode 100644
+index 92df85d56..000000000
+Binary files a/kernel/vroot/lib/modules/6.7.4/phone_book_module.ko and /dev/null differ
